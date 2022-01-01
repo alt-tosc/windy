@@ -549,6 +549,13 @@ proc newWindow*(
       glXSwapIntervalSGI(1)
     else:
       raise WindyError.newException("VSync is not supported")
+  else:
+    if glXSwapIntervalEXT != nil:
+      display.glXSwapIntervalEXT(result.handle, 0)
+    elif glXSwapIntervalMESA != nil:
+      glXSwapIntervalMESA(0)
+    elif glXSwapIntervalSGI != nil:
+      glXSwapIntervalSGI(0)
 
   if visible:
     result.visible = true
