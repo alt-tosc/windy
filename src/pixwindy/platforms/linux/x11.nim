@@ -1,5 +1,8 @@
-import ../../common, ../../internal, os, sequtils, sets, strformat, times,
-    unicode, vmath, x11/glx, x11/keysym, x11/x, x11/xevent, x11/xlib
+import os, sequtils, sets, strformat, times, unicode, vmath
+import pixie
+import ../../common, ../../internal
+import x11/[keysym, x, xevent, xlib]
+
 type
   XWindow = x.Window
 
@@ -25,9 +28,9 @@ type
     clickSeqLen: int
 
     prevSize, prevPos: IVec2
+    pixels: seq[tuple[b, g, r, a: byte]]
 
     handle: XWindow
-    ctx: GlxContext
     gc: GC
     ic: XIC
     im: XIM
@@ -316,17 +319,43 @@ proc destroy(window: Window) =
     display.XSyncDestroyCounter(window.xsyncConter)
   wasMoved window[]
   window.closed = true
+  window.closeRequested = true
 
 proc closed*(window: Window): bool = window.closed
 
 proc close*(window: Window) =
   destroy window
 
-proc makeContextCurrent*(window: Window) =
-  display.glXMakeCurrent(window.handle, window.ctx)
+proc draw*(window: Window, image: Image) =
+  proc asXImage(data: pointer, size: IVec2): XImage = XImage(
+    width: size.x,
+    height: size.y,
+    depth: 24,
+    bitsPerPixel: 32,
+    format: ZPixmap,
+    data: cast[cstring](data),
+    byteOrder: LSBFirst,
+    bitmapUnit: display.bitmapUnit,
+    bitmapBitOrder: LSBFirst,
+    bitmapPad: 32,
+    bytesPerLine: int32 size.x * ColorRgba.sizeof
+  )
 
-proc swapBuffers*(window: Window) =
-  display.glXSwapBuffers(window.handle)
+  if window.prevSize.x * window.prevSize.y == 0: return
+  assert image.width == window.prevSize.x and image.height == window.prevSize.y
+
+  # copy rgb data
+  for i, v in image.data:
+    let px = window.pixels[i].addr
+    px[].b = v.b
+    px[].g = v.g
+    px[].r = v.r
+
+  var ximg = asXImage(window.pixels[0].unsafeaddr, window.prevSize)
+  display.XPutImage(window.handle, window.gc, ximg.addr, 0, 0, 0, 0, window.prevSize.x.uint32, window.prevSize.y.uint32)
+
+  # signal that frame was drawn
+  display.XSyncSetCounter(window.xsyncConter, window.lastSync)
 
 proc visible*(window: Window): bool =
   window.innerVisible
@@ -338,10 +367,7 @@ proc `visible=`*(window: Window, v: bool) =
     display.XUnmapWindow(window.handle)
 
 proc size*(window: Window): IVec2 =
-  var
-    xwa: XWindowAttributes
-  display.XGetWindowAttributes(window.handle, xwa.addr)
-  result = xwa.size
+  window.prevSize
 
 proc `size=`*(window: Window, v: IVec2) =
   display.XResizeWindow(window.handle, v.x.uint32, v.y.uint32)
@@ -509,7 +535,6 @@ proc newWindow*(
   title: string,
   size: IVec2,
   visible = true,
-  vsync = true,
 
   openglMajorVersion = 4,
   openglMinorVersion = 1,
@@ -551,6 +576,8 @@ proc newWindow*(
     swa.addr
   )
 
+  result.pixels.setLen size.x * size.y
+
   display.XSelectInput(
     result.handle,
     ExposureMask or
@@ -584,31 +611,7 @@ proc newWindow*(
   var gcv: XGCValues
   result.gc = display.XCreateGC(result.handle, GCForeground or GCBackground, gcv.addr)
 
-  result.ctx = display.glXCreateContext(vi.addr, nil, 1)
-
-  if result.ctx == nil:
-    raise WindyError.newException("Error creating OpenGL context")
-
   result.title = title
-
-  makeContextCurrent result
-
-  if vsync:
-    if glXSwapIntervalEXT != nil:
-      display.glXSwapIntervalEXT(result.handle, 1)
-    elif glXSwapIntervalMESA != nil:
-      glXSwapIntervalMESA(1)
-    elif glXSwapIntervalSGI != nil:
-      glXSwapIntervalSGI(1)
-    else:
-      raise WindyError.newException("VSync is not supported")
-  else:
-    if glXSwapIntervalEXT != nil:
-      display.glXSwapIntervalEXT(result.handle, 0)
-    elif glXSwapIntervalMESA != nil:
-      glXSwapIntervalMESA(0)
-    elif glXSwapIntervalSGI != nil:
-      glXSwapIntervalSGI(0)
 
   if visible:
     result.visible = true
@@ -634,9 +637,6 @@ proc pollEvents(window: Window) =
   window.perFrame = PerFrame()
   window.buttonPressed = {}
   window.buttonReleased = {}
-
-  # signal that frame was drawn
-  display.XSyncSetCounter(window.xsyncConter, window.lastSync)
 
   var ev: XEvent
 
@@ -729,6 +729,7 @@ proc pollEvents(window: Window) =
 
       if ev.configure.size != window.prevSize:
         window.prevSize = ev.configure.size
+        window.pixels.setLen window.prevSize.x * window.prevSize.y
         if window.onResize != nil:
           window.onResize()
 

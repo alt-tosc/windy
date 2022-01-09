@@ -338,6 +338,8 @@ const
   PseudoColor* = 3
   TrueColor* = 4
   DirectColor* = 5
+  LSBFirst* = 0
+  MSBFirst* = 1
 
 const
   xaPrimary* = Atom 1

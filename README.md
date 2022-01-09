@@ -29,7 +29,7 @@ API reference: todo
 ```nim
 import pixwindy, pixie
 
-let window = newWindow("Simple window", ivec2(1280, 800))
+let window = newWindow("simple window", ivec2(1280, 800))
 
 var image = newImage(1280, 800)
 

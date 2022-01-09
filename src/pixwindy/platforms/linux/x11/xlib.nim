@@ -185,6 +185,36 @@ type
   XSyncValue* = object
     hi*: int32
     lo*: uint32
+  
+  F* = object
+    create_image*: proc(
+      para1: Display, para2: ptr Visual, para3: cuint,
+      para4: cint, para5: cint, para6: cstring, para7: cuint,
+      para8: cuint, para9: cint, para10: cint
+    ): ptr XImage {.cdecl.}
+    destroy_image*: proc(para1: ptr XImage): cint {.cdecl.}
+    get_pixel*: proc(para1: ptr XImage, para2: cint, para3: cint): culong {.cdecl.}
+    put_pixel*: proc(para1: ptr XImage, para2: cint, para3: cint, para4: culong): cint {.cdecl.}
+    sub_image*: proc(para1: ptr XImage, para2: cint, para3: cint, para4: cuint, para5: cuint): ptr XImage {.cdecl.}
+    add_pixel*: proc(para1: ptr XImage, para2: clong): cint {.cdecl.}
+
+  XImage* = object
+    width*, height*: cint
+    xoffset*: cint
+    format*: cint
+    data*: cstring
+    byte_order*: cint
+    bitmap_unit*: cint
+    bitmap_bit_order*: cint
+    bitmap_pad*: cint
+    depth*: cint
+    bytes_per_line*: cint
+    bits_per_pixel*: cint
+    red_mask*: culong
+    green_mask*: culong
+    blue_mask*: culong
+    obdata*: pointer
+    f*: F
 
 const
   XIMPreeditArea* = 1 shl 0
@@ -328,6 +358,8 @@ proc XSetSelectionOwner*(d; kind: Atom; window: Window;
     time: int32 = CurrentTime)
 proc XConvertSelection*(d; kind: Atom; to: Atom; resultProperty: Atom;
     window: Window; time: int32 = CurrentTime)
+
+proc XPutImage*(d; window: Drawable, gc: GC, image: ptr XImage, srcx, srcy: int32, dstx, dsty: int32, w, h: uint32)
 
 {.pop.}
 
