@@ -1,17 +1,14 @@
-# Windy
-
-**This library is still in development and is not ready to be used.**
+# PixWindy
 
 Windy is a windowing library for Nim that uses OS native APIs to manage windows, set up OpenGL and receive mouse and keyboard input.
 
-`nimble install windy`
+`nimble install https://github.com/FolxTeam/pixwindy`
 
-![Github Actions](https://github.com/treeform/windy/workflows/Github%20Actions/badge.svg)
-
-Windy will work great for 2D and 3D OpenGL games as well as GUI apps using OpenGL. Using this library should feel similar to GLFW or SDL.
+PixWindy will work great for simple 2D applications that does't redraw content too often.  
+Using this library should feel similar to [Windy](https://github.com/treeform/windy).
 
 Features:
-* Multi-platform (Windows, macOS, Linux)
+* Multi-platform (Windows, ~~macOS~~, Linux)
 * Manage one or many windows
 * Customizable windows (resizable, hidden, fullscreen and more)
 * DPI and content-scaling aware
@@ -23,37 +20,30 @@ Features:
 
 ### Documentation
 
-API reference: https://nimdocs.com/treeform/windy/windy.html
+API reference: todo
 
-## Basic Example
+# Examples
+
+### Simple window
 
 ```nim
-import opengl, windy
+import pixwindy, pixie
 
-let window = newWindow("Windy Example", ivec2(1280, 800))
+let window = newWindow("Simple window", ivec2(1280, 800))
 
-window.makeContextCurrent()
-loadExtensions()
+var image = newImage(1280, 800)
 
-proc display() =
-  glClear(GL_COLOR_BUFFER_BIT)
-  # Your OpenGL display code here
-  window.swapBuffers()
+proc display =
+  image.fill color(1, 1, 1, 1)
+  window.draw image
+
+window.onResize = proc =
+  if window.size.x * window.size.y == 0: return
+  image = newImage(window.size.x, window.size.y)
+  display()
+
+display()
 
 while not window.closeRequested:
-  display()
   pollEvents()
 ```
-
-[Check out more examples here.](https://github.com/treeform/windy/tree/master/examples)
-
-
-### Why not just use GLFW or SDL?
-
-Here are a few reasons that may be worth considering:
-
-* Windy is written in Nim so it will be more natural to use than bindings to other libraries. For example, making a window fullscreen is as easy as `window.fullscreen = true`. Consider browsing some of the examples and consider if you would find this Nim-first API more pleasant to work with.
-
-* Windy includes events for double, triple and quadruple clicks. Furthermore, Windy maintains the keyboard and mouse state in a way that makes reacting to input state easier each frame. See `buttonPressed[]`, `buttonDown[]`, `buttonReleased[]` and `buttonToggle[]` on `Window`.
-
-* Windy has IME input support for Chinese, Japanese, Korean and other languages. Text input can also be enabled or disabled at any time (for example, to avoid opening the IME editor when a user just wants to use WASD in a game).

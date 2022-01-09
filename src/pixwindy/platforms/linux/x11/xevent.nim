@@ -363,9 +363,9 @@ type
     display*: Display
     resourceid*: XID
     serial*: culong
-    error_code*: cuchar
-    request_code*: cuchar
-    minor_code*: cuchar
+    error_code*: uint8
+    request_code*: uint8
+    minor_code*: uint8
 
   XAnyEvent* = object
     kind*: XEventKind

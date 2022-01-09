@@ -16,7 +16,7 @@ type
   KeySym* = XID
   XSyncCounter* = distinct XID
 
-  KeyCode* = cuchar
+  KeyCode* = uint8
 
   PropMode* {.size: int32.sizeof.} = enum
     pmReplace = 0
