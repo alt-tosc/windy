@@ -1,4 +1,6 @@
-import ../../common, ../../internal, times, unicode, utils, vmath, windefs
+import times, unicode, utils, windefs
+import pixie except Rect
+import ../../common, ../../internal
 
 const
   windowClassName = "WINDY0"
@@ -6,28 +8,6 @@ const
   wheelDelta = 120
   decoratedWindowStyle = WS_OVERLAPPEDWINDOW
   undecoratedWindowStyle = WS_POPUP
-
-  WGL_DRAW_TO_WINDOW_ARB = 0x2001
-  WGL_ACCELERATION_ARB = 0x2003
-  WGL_SUPPORT_OPENGL_ARB = 0x2010
-  WGL_DOUBLE_BUFFER_ARB = 0x2011
-  WGL_PIXEL_TYPE_ARB = 0x2013
-  WGL_COLOR_BITS_ARB = 0x2014
-  WGL_ALPHA_BITS_ARB = 0x201B
-  WGL_DEPTH_BITS_ARB = 0x2022
-  WGL_STENCIL_BITS_ARB = 0x2023
-  WGL_FULL_ACCELERATION_ARB = 0x2027
-  WGL_TYPE_RGBA_ARB = 0x202B
-  WGL_SAMPLES_ARB = 0x2042
-
-  WGL_CONTEXT_MAJOR_VERSION_ARB = 0x2091
-  WGL_CONTEXT_MINOR_VERSION_ARB = 0x2092
-  WGL_CONTEXT_PROFILE_MASK_ARB = 0x9126
-  WGL_CONTEXT_CORE_PROFILE_BIT_ARB = 0x00000001
-  # WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB = 0x00000002
-  WGL_CONTEXT_FLAGS_ARB = 0x2094
-  # WGL_CONTEXT_DEBUG_BIT_ARB = 0x0001
-  WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB = 0x0002
 
 type
   Window* = ref object
@@ -49,7 +29,12 @@ type
 
     hWnd: HWND
     hdc: HDC
-    hglrc: HGLRC
+    buffer: tuple[
+      w, h: int;
+      bitmap: HBitmap,
+      hdc: Hdc,
+      pixels: ptr UncheckedArray[tuple[b, g, r, _: uint8]]
+    ]
 
   ExitFullscreenInfo = ref object
     maximized: bool
@@ -57,15 +42,6 @@ type
     rect: RECT
 
 var
-  wglCreateContext: wglCreateContext
-  wglDeleteContext: wglDeleteContext
-  wglGetProcAddress: wglGetProcAddress
-  wglGetCurrentDC: wglGetCurrentDC
-  wglGetCurrentContext: wglGetCurrentContext
-  wglMakeCurrent: wglMakeCurrent
-  wglCreateContextAttribsARB: wglCreateContextAttribsARB
-  wglChoosePixelFormatARB: wglChoosePixelFormatARB
-  wglSwapIntervalEXT: wglSwapIntervalEXT
   SetProcessDpiAwarenessContext: SetProcessDpiAwarenessContext
   GetDpiForWindow: GetDpiForWindow
   AdjustWindowRectExForDpi: AdjustWindowRectExForDpi
@@ -161,13 +137,14 @@ proc destroy(window: Window) =
   window.onRune = nil
   window.onImeChange = nil
 
-  if window.hglrc != 0:
-    discard wglMakeCurrent(window.hdc, 0)
-    discard wglDeleteContext(window.hglrc)
-    window.hglrc = 0
+  if window.buffer.pixels != nil:
+    discard DeleteDC window.buffer.hdc
+    discard DeleteObject window.buffer.bitmap
+  
   if window.hdc != 0:
     discard ReleaseDC(window.hWnd, window.hdc)
     window.hdc = 0
+  
   if window.hWnd != 0:
     let key = "Windy".wstr()
     discard RemovePropW(window.hWnd, cast[ptr WCHAR](key[0].unsafeAddr))
@@ -210,10 +187,6 @@ proc updateWindowStyle(hWnd: HWND, style: LONG) =
     rect.bottom - rect.top,
     SWP_FRAMECHANGED or SWP_NOACTIVATE or SWP_NOZORDER
   )
-
-proc makeContextCurrent(hdc: HDC, hglrc: HGLRC) =
-  if wglMakeCurrent(hdc, hglrc) == 0:
-    raise newException(WindyError, "Error activating OpenGL rendering context")
 
 proc monitorInfo(window: Window): MONITORINFO =
   result.cbSize = sizeof(MONITORINFO).DWORD
@@ -425,89 +398,6 @@ proc `runeInputEnabled=`*(window: Window, runeInputEnabled: bool) =
     discard ImmAssociateContextEx(window.hWnd, 0, IACE_DEFAULT)
   else:
     discard ImmAssociateContextEx(window.hWnd, 0, 0)
-
-proc loadOpenGL() =
-  let opengl = LoadLibraryA("opengl32.dll")
-  if opengl == 0:
-    raise newException(WindyError, "Loading opengl32.dll failed")
-
-  wglCreateContext =
-    cast[wglCreateContext](GetProcAddress(opengl, "wglCreateContext"))
-  wglDeleteContext =
-    cast[wglDeleteContext](GetProcAddress(opengl, "wglDeleteContext"))
-  wglGetProcAddress =
-    cast[wglGetProcAddress](GetProcAddress(opengl, "wglGetProcAddress"))
-  wglGetCurrentDC =
-    cast[wglGetCurrentDC](GetProcAddress(opengl, "wglGetCurrentDC"))
-  wglGetCurrentContext =
-    cast[wglGetCurrentContext](GetProcAddress(opengl, "wglGetCurrentContext"))
-  wglMakeCurrent =
-    cast[wglMakeCurrent](GetProcAddress(opengl, "wglMakeCurrent"))
-
-  # Before we can load extensions, we need a dummy OpenGL context, created using
-  # a dummy window. We use a dummy window because you can only set the pixel
-  # format for a window once. For the real window, we want to use
-  # wglChoosePixelFormatARB (so we can potentially specify options that aren't
-  # available in PIXELFORMATDESCRIPTOR), but we can't load and use that before
-  # we have a context.
-
-  let dummyWindowClassName = "WindyDummy"
-
-  proc dummyWndProc(
-    hWnd: HWND, uMsg: UINT, wParam: WPARAM, lParam: LPARAM
-  ): LRESULT {.stdcall.} =
-    DefWindowProcW(hWnd, uMsg, wParam, lParam)
-
-  registerWindowClass(dummyWindowClassName, dummyWndProc)
-
-  let
-    hWnd = createWindow(
-      dummyWindowClassName,
-      dummyWindowClassName,
-      ivec2(CW_USEDEFAULT, CW_USEDEFAULT)
-    )
-    hdc = getDC(hWnd)
-
-  var pfd: PIXELFORMATDESCRIPTOR
-  pfd.nSize = sizeof(PIXELFORMATDESCRIPTOR).WORD
-  pfd.nVersion = 1
-  pfd.dwFlags = PFD_DRAW_TO_WINDOW or PFD_SUPPORT_OPENGL or PFD_DOUBLEBUFFER
-  pfd.iPixelType = PFD_TYPE_RGBA
-  pfd.cColorBits = 32
-  pfd.cAlphaBits = 8
-  pfd.cDepthBits = 24
-  pfd.cStencilBits = 8
-
-  let pixelFormat = ChoosePixelFormat(hdc, pfd.addr)
-  if pixelFormat == 0:
-    raise newException(WindyError, "Error choosing pixel format")
-
-  if SetPixelFormat(hdc, pixelFormat, pfd.addr) == 0:
-    raise newException(WindyError, "Error setting pixel format")
-
-  let hglrc = wglCreateContext(hdc)
-  if hglrc == 0:
-    raise newException(WindyError, "Error creating rendering context")
-
-  makeContextCurrent(hdc, hglrc)
-
-  wglCreateContextAttribsARB =
-    cast[wglCreateContextAttribsARB](
-      wglGetProcAddress("wglCreateContextAttribsARB")
-    )
-  wglChoosePixelFormatARB =
-    cast[wglChoosePixelFormatARB](
-      wglGetProcAddress("wglChoosePixelFormatARB")
-    )
-  wglSwapIntervalEXT =
-    cast[wglSwapIntervalEXT](
-      wglGetProcAddress("wglSwapIntervalEXT")
-    )
-
-  discard wglMakeCurrent(hdc, 0)
-  discard wglDeleteContext(hglrc)
-  discard ReleaseDC(hWnd, hdc)
-  discard DestroyWindow(hWnd)
 
 proc loadLibraries() =
   let user32 = LoadLibraryA("user32.dll")
@@ -747,7 +637,6 @@ proc init() =
     return
   loadLibraries()
   discard SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
-  loadOpenGL()
   helperWindow = createHelperWindow()
   registerWindowClass(windowClassName, wndProc)
   platformDoubleClickInterval = GetDoubleClickTime().float64 / 1000
@@ -778,16 +667,46 @@ proc pollEvents*() =
       if (GetKeyState(VK_RSHIFT) and KF_UP) == 0:
         activeWindow.handleButtonRelease(KeyRightShift)
 
-proc makeContextCurrent*(window: Window) =
-  makeContextCurrent(window.hdc, window.hglrc)
+proc draw*(window: Window, image: Image) =
+  var ps: PaintStruct
+  discard window.hwnd.BeginPaint(ps.addr)
+  defer: discard window.hwnd.EndPaint(ps.addr)
 
-proc swapBuffers*(window: Window) =
-  if SwapBuffers(window.hdc) == 0:
-    raise newException(WindyError, "Error swapping buffers")
+  if image.width * image.height == 0: return
+  assert image.width == window.size.x and image.height == window.size.y
+  
+  if image.width != window.buffer.w or image.height != window.buffer.h:
+    if window.buffer.pixels != nil:
+      discard DeleteDC window.buffer.hdc
+      discard DeleteObject window.buffer.bitmap
+    
+    window.buffer.w = image.width
+    window.buffer.h = image.height
+  
+    var bmi = BitmapInfo(
+      header: BitmapInfoHeader(
+        size: BitmapInfoHeader.sizeof.int32, w: image.width.Long, h: -image.height.Long,
+        planes: 1, bitCount: 32, compression: Bi_rgb
+      )
+    )
+    window.buffer.bitmap = CreateDibSection(0, bmi.addr, Dib_rgb_colors, cast[ptr pointer](window.buffer.pixels.addr), 0, 0)
+    window.buffer.hdc = CreateCompatibleDC(0)
+    discard window.buffer.hdc.SelectObject window.buffer.bitmap
+  
+  var rect: Rect
+  discard window.hwnd.GetClientRect(rect.addr)
+  for i, c in image.data:
+    let px = window.buffer.pixels[i].addr
+    px[].b = c.b
+    px[].g = c.g
+    px[].r = c.r
+    
+  discard window.hdc.BitBlt(0, 0, rect.right, rect.bottom, window.buffer.hdc, 0, 0, SrcCopy)
 
 proc close*(window: Window) =
   destroy window
   window.state.closed = true
+  window.state.closeRequested = true
 
 proc closeIme*(window: Window) =
   let hIMC = ImmGetContext(window.hWnd)
@@ -823,85 +742,9 @@ proc newWindow*(
   try:
     result.hdc = getDC(result.hWnd)
 
-    let pixelFormatAttribs = [
-      WGL_DRAW_TO_WINDOW_ARB.int32,
-      1,
-      WGL_SUPPORT_OPENGL_ARB,
-      1,
-      WGL_DOUBLE_BUFFER_ARB,
-      1,
-      WGL_ACCELERATION_ARB,
-      WGL_FULL_ACCELERATION_ARB,
-      WGL_PIXEL_TYPE_ARB,
-      WGL_TYPE_RGBA_ARB,
-      WGL_COLOR_BITS_ARB,
-      32,
-      WGL_ALPHA_BITS_ARB,
-      8,
-      WGL_DEPTH_BITS_ARB,
-      depthBits.int32,
-      WGL_STENCIL_BITS_ARB,
-      stencilBits.int32,
-      WGL_SAMPLES_ARB,
-      msaa.int32,
-      0
-    ]
-
-    var
-      pixelFormat: int32
-      numFormats: UINT
-    if wglChoosePixelFormatARB(
-      result.hdc,
-      pixelFormatAttribs[0].unsafeAddr,
-      nil,
-      1,
-      pixelFormat.addr,
-      numFormats.addr
-    ) == 0:
-      raise newException(WindyError, "Error choosing pixel format")
-    if numFormats == 0:
-      raise newException(WindyError, "No pixel format chosen")
-
-    var pfd: PIXELFORMATDESCRIPTOR
-    if DescribePixelFormat(
-      result.hdc,
-      pixelFormat,
-      sizeof(PIXELFORMATDESCRIPTOR).UINT,
-      pfd.addr
-    ) == 0:
-      raise newException(WindyError, "Error describing pixel format")
-
-    if SetPixelFormat(result.hdc, pixelFormat, pfd.addr) == 0:
-      raise newException(WindyError, "Error setting pixel format")
-
-    let contextAttribs = [
-      WGL_CONTEXT_MAJOR_VERSION_ARB.int32,
-      openglMajorVersion.int32,
-      WGL_CONTEXT_MINOR_VERSION_ARB,
-      openglMinorVersion.int32,
-      WGL_CONTEXT_PROFILE_MASK_ARB,
-      WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
-      WGL_CONTEXT_FLAGS_ARB,
-      WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB,
-      0
-    ]
-
-    result.hglrc = wglCreateContextAttribsARB(
-      result.hdc,
-      0,
-      contextAttribs[0].unsafeAddr
-    )
-    if result.hglrc == 0:
-      raise newException(WindyError, "Error creating OpenGL context")
-
     # The first call to ShowWindow may ignore the parameter so do an initial
     # call to clear that behavior.
     discard ShowWindow(result.hWnd, SW_HIDE)
-
-    result.makeContextCurrent()
-
-    if wglSwapIntervalEXT(if vsync: 1 else: 0) == 0:
-      raise newException(WindyError, "Error setting swap interval")
 
     windows.add(result)
 

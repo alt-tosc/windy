@@ -142,6 +142,31 @@ type
     rcArea*: RECT
   LPCANDIDATEFORM* = ptr CANDIDATEFORM
 
+  PaintStruct* = object
+    hdc*: Hdc
+    fErase*: Bool
+    rcPaint*: Rect
+    fRestore*: Bool
+    fIncUpdate*: Bool
+    rgbReserved*: array[32, byte]
+    
+  BitmapInfo* = object
+    header*: BitmapInfoHeader
+    colors*: tuple[r, g, b, _: byte]
+  
+  BitmapInfoHeader* {.pure.} = object
+    size*: DWord
+    w*, h*: Long
+    planes*: Word
+    bitCount*: Word
+    compression*: DWord
+    sizeImage*: DWord
+    xPelsPerMeter*: Long
+    yPelsPerMeter*: Long
+    clrUsed*: DWord
+    clrImportant*: DWord
+  
+
 type
   wglCreateContext* = proc(hdc: HDC): HGLRC {.stdcall, raises: [].}
   wglDeleteContext* = proc(hglrc: HGLRC): BOOL {.stdcall, raises: [].}
@@ -388,6 +413,9 @@ const
   IACE_CHILDREN* = 0x0001
   IACE_DEFAULT* = 0x0010
   IACE_IGNORENOCONTEXT* = 0x0020
+  BI_RGB* = 0
+  DIB_RGB_COLORS* = 0
+  SRCCOPY* = DWORD 0x00CC0020
 
 {.push importc, stdcall.}
 
@@ -679,6 +707,9 @@ proc SetCaretPos*(
   y: int32
 ): BOOL {.dynlib: "User32".}
 
+proc BeginPaint*(window: HWnd, ps: ptr PaintStruct): HDC {.dynlib: "user32".}
+proc EndPaint*(window: HWnd, ps: ptr PaintStruct): Bool {.dynlib: "user32".}
+
 proc ChoosePixelFormat*(
   hdc: HDC,
   ppfd: ptr PIXELFORMATDESCRIPTOR
@@ -700,6 +731,32 @@ proc DescribePixelFormat*(
 ): int32 {.dynlib: "Gdi32".}
 
 proc SwapBuffers*(hdc: HDC): BOOL {.dynlib: "Gdi32".}
+
+proc DeleteDC*(hdc: Hdc): Bool {.dynlib: "gdi32".}
+
+proc DeleteObject*(ho: Handle): Bool {.dynlib: "gdi32".}
+
+proc CreateDIBSection*(
+  hdc: Hdc,
+  lpbmi: ptr BitmapInfo,
+  usage: Uint,
+  ppvBits: ptr pointer,
+  hSection: Handle,
+  offset: DWord
+): HBitmap {.dynlib: "gdi32".}
+
+proc CreateCompatibleDC*(hdc: Hdc): Hdc {.dynlib: "gdi32".}
+
+proc SelectObject*(hdc: Hdc, h: Handle): Handle {.dynlib: "gdi32".}
+
+proc BitBlt*(
+  hdc: HDC,
+  x, y: int32,
+  cx, cy: int32,
+  src: Hdc,
+  srcx, srcy: int32,
+  op: DWord
+): Bool {.dynlib: "gdi32".}
 
 proc ImmGetContext*(
   hWnd: HWND
