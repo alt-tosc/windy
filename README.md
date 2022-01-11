@@ -17,6 +17,8 @@ Features:
 * Keyboard input (key events + unicode)
 * Easy polling of keyboard state via `buttonDown[Button]` and more
 * IME support (for Chinese, Japanese etc text input)
+* System clipboard (copy and paste) support
+* Show a system tray icon and menu (Windows only)
 
 ### Documentation
 

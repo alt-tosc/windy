@@ -34,12 +34,11 @@ type
     gc: GC
     ic: XIC
     im: XIM
-    xsyncConter: XSyncCounter
+    xSyncCounter: XSyncCounter
     lastSync: XSyncValue
 
     closeRequested, closed: bool
     runeInputEnabled: bool
-    innerVisible: bool
     innerDecorated: bool
     innerFocused: bool
 
@@ -64,14 +63,23 @@ var
   clipboardWindow: XWindow
   clipboardContent: string
 
-proc atom[name: static string](): Atom =
-  var a {.global.}: Atom
-  if a == 0:
-    a = display.XInternAtom(name, 0)
-  a
-
-template atom(name: static string): Atom =
-  atom[name]()
+proc initConstants(display: Display) =
+  xaNetWMState = display.XInternAtom("_NET_WM_STATE", 0)
+  xaNetWMStateMaximizedHorz = display.XInternAtom("_NET_WM_STATE_MAXIMIZED_HORZ", 0)
+  xaNetWMStateMaximizedVert = display.XInternAtom("_NET_WM_STATE_MAXIMIZED_VERT", 0)
+  xaWMState = display.XInternAtom("WM_STATE", 0)
+  xaNetWMStateHiden = display.XInternAtom("_NET_WM_STATE_HIDDEN", 0)
+  xaNetWMStateFullscreen = display.XInternAtom("_NET_WM_STATE_FULLSCREEN", 0)
+  xaNetWMName = display.XInternAtom("_NET_WM_NAME", 0)
+  xaUTF8String = display.XInternAtom("UTF8_STRING", 0)
+  xaNetWMIconName = display.XInternAtom("_NET_WM_ICON_NAME", 0)
+  xaWMDeleteWindow = display.XInternAtom("WM_DELETE_WINDOW", 0)
+  xaNetWMSyncRequest = display.XInternAtom("_NET_WM_SYNC_REQUEST", 0)
+  xaNetWMSyncRequestCounter = display.XInternAtom("_NET_WM_SYNC_REQUEST_COUNTER", 0)
+  xaClipboard = display.XInternAtom("CLIPBOARD", 0)
+  xaWindyClipboardTargetProperty = display.XInternAtom("windy_clipboardTargetProperty", 0)
+  xaTargets = display.XInternAtom("TARGETS", 0)
+  xaText = display.XInternAtom("TEXT", 0)
 
 proc atomIfExist(name: string): Atom =
   display.XInternAtom(name, 1)
@@ -89,6 +97,8 @@ proc init =
   display = XOpenDisplay(getEnv("DISPLAY").cstring)
   if display == nil:
     raise WindyError.newException("Error opening X11 display, make sure the DISPLAY environment variable is set correctly")
+
+  display.initConstants()
 
   wmForDecoratedKind =
     if (decoratedAtom = atomIfExist"_MOTIF_WM_HINTS"; decoratedAtom != 0):
@@ -109,15 +119,26 @@ proc property(
   var
     kind: Atom
     format: cint
-    lenght: culong
+    length: culong
     bytesAfter: culong
     data: cstring
-  display.XGetWindowProperty(window, property, 0, 0, false, 0, kind.addr,
-      format.addr, lenght.addr, bytesAfter.addr, data.addr)
+  display.XGetWindowProperty(
+    window,
+    property,
+    0,
+    -1,
+    false,
+    0,
+    kind.addr,
+    format.addr,
+    length.addr,
+    bytesAfter.addr,
+    data.addr
+  )
 
   result.kind = kind
 
-  let len = lenght.int * format.int div 8
+  let len = length.int * format.int div 8
   result.data = newString(len)
   if len != 0:
     copyMem(result.data[0].addr, data, len)
@@ -184,12 +205,12 @@ proc newClientMessage[T](
   result.client.sendEvent = sendEvent
 
 proc wmState(window: XWindow): HashSet[Atom] =
-  window.property(atom"_NET_WM_STATE").data.asSeq(Atom).toHashSet
+  window.property(xaNetWMState).data.asSeq(Atom).toHashSet
 
 proc wmStateSend(window: XWindow, op: int, atom: Atom) =
   # op: 2 - switch, 1 - set true, 0 - set false
   display.defaultRootWindow.send(
-    window.newClientMessage(atom"_NET_WM_STATE", [Atom op, atom]),
+    window.newClientMessage(xaNetWMState, [Atom op, atom]),
     SubstructureNotifyMask or SubstructureRedirectMask
   )
 
@@ -304,7 +325,7 @@ proc keysymToButton(sym: KeySym): Button =
 proc queryKeyboardState(): set[0..255] =
   var r: array[32, char]
   display.XQueryKeymap(r)
-  result = cast[ptr set[0..255]](r.addr)[]
+  return cast[ptr set[0..255]](r.addr)[]
 
 proc destroy(window: Window) =
   if window.ic != nil:
@@ -315,8 +336,8 @@ proc destroy(window: Window) =
     display.XFreeGC(window.gc)
   if window.handle != 0:
     display.XDestroyWindow(window.handle)
-  if window.xsyncConter.int != 0:
-    display.XSyncDestroyCounter(window.xsyncConter)
+  if window.xSyncCounter.int != 0:
+    display.XSyncDestroyCounter(window.xSyncCounter)
   wasMoved window[]
   window.closed = true
   window.closeRequested = true
@@ -357,28 +378,37 @@ proc draw*(window: Window, image: Image) =
   # signal that frame was drawn
   display.XSyncSetCounter(window.xsyncConter, window.lastSync)
 
+template blockUntil(expression: untyped) {.dirty.} =
+  ## In X11 many properties are async, you change them and then it takes
+  ## time for them to take effect. This is different from Win/Mac. This
+  ## waits till property changes before continueing to mach behavior.
+  ## It will stop waiting eventually though and just return.
+  let start = epochTime()
+  while true:
+    if expression:
+      break
+    if epochTime() - start > 0.500:
+      # We could throw exception here, Chrome + GLFW do not though,
+      # and just let it slide, giving it kind of best effort.
+      break
+    sleep(1)
+
 proc visible*(window: Window): bool =
-  window.innerVisible
+  var
+    attributes: XWindowAttributes
+  display.XGetWindowAttributes(window.handle, attributes.addr)
+  return attributes.map_state == IsViewable
 
 proc `visible=`*(window: Window, v: bool) =
   if v:
     display.XMapWindow(window.handle)
   else:
     display.XUnmapWindow(window.handle)
-
-proc size*(window: Window): IVec2 =
-  window.prevSize
-
-proc `size=`*(window: Window, v: IVec2) =
-  display.XResizeWindow(window.handle, v.x.uint32, v.y.uint32)
-
-proc framebufferSize*(window: Window): IVec2 =
-  window.size
+  blockUntil(window.visible == v)
 
 proc pos*(window: Window): IVec2 =
   var
     child: XWindow
-    xwa: XWindowAttributes
   display.XTranslateCoordinates(
     window.handle,
     display.defaultRootWindow,
@@ -388,31 +418,64 @@ proc pos*(window: Window): IVec2 =
     result.y.addr,
     child.addr
   )
-  display.XGetWindowAttributes(window.handle, xwa.addr)
-  result -= xwa.pos
+
+proc borderSize(window: Window): IVec2 =
+  # Figure out the chrome size of the window.
+  let originalValue = window.pos
+  display.XMoveWindow(window.handle, 100, 100)
+  blockUntil(originalValue != window.pos)
+  return window.pos - ivec2(100, 100)
 
 proc `pos=`*(window: Window, v: IVec2) =
+  let v = v - window.borderSize()
+  let originalValue = window.pos
+  if originalValue == v:
+    return
   display.XMoveWindow(window.handle, v.x, v.y)
+  blockUntil(originalValue != window.pos)
+
+proc size*(window: Window): IVec2 =
+  var
+    attributes: XWindowAttributes
+  display.XGetWindowAttributes(window.handle, attributes.addr)
+  return attributes.size
+
+proc framebufferSize*(window: Window): IVec2 =
+  window.size
+
+proc `size=`*(window: Window, v: IVec2) =
+  let originalValue = window.size
+  if originalValue == v:
+    return
+
+  # Its important to swap buffers so that openGL viewport updates.
+  window.swapBuffers()
+  # TODO: for some reason Chrome GLFW just do display.XFlush() and its enough?
+  display.XResizeWindow(window.handle, v.x.uint32, v.y.uint32)
+
+  blockUntil(originalValue != window.size)
 
 proc maximized*(window: Window): bool =
   let wmState = window.handle.wmState
-  atom"_NET_WM_STATE_MAXIMIZED_HORZ" in wmState and
-  atom"_NET_WM_STATE_MAXIMIZED_VERT" in wmState
+  return xaNetWMStateMaximizedHorz in wmState and
+    xaNetWMStateMaximizedVert in wmState
 
 proc `maximized=`*(window: Window, v: bool) =
-  window.handle.wmStateSend v.int, atom"_NET_WM_STATE_MAXIMIZED_HORZ"
-  window.handle.wmStateSend v.int, atom"_NET_WM_STATE_MAXIMIZED_VERT"
+  window.handle.wmStateSend(v.int, xaNetWMStateMaximizedHorz)
+  window.handle.wmStateSend(v.int, xaNetWMStateMaximizedVert)
+  blockUntil(window.maximized == v)
 
 proc minimized*(window: Window): bool =
-  let wState = window.handle.property(atom"WM_STATE").data.asSeq(int32)
-  wState.len >= 1 and wState[0] == 3 or
-  atom"_NET_WM_STATE_HIDDEN" in window.handle.wmState
+  let wState = window.handle.property(xaWMState).data.asSeq(int32)
+  return wState.len >= 1 and wState[0] == 3 or
+    xaNetWMStateHiden in window.handle.wmState
 
 proc `minimized=`*(window: Window, v: bool) =
   if v:
     display.XIconifyWindow(window.handle, display.defaultScreen)
   else:
     display.XRaiseWindow(window.handle)
+  blockUntil(window.minimized == v)
 
 proc focused*(window: Window): bool =
   return window.innerFocused
@@ -421,10 +484,11 @@ proc focus*(window: Window) =
   display.XSetInputFocus(window.handle, rtNone)
 
 proc fullscreen*(window: Window): bool =
-  atom"_NET_WM_STATE_FULLSCREEN" in window.handle.wmState
+  xaNetWMStateFullscreen in window.handle.wmState
 
 proc `fullscreen=`*(window: Window, v: bool) =
-  window.handle.wmStateSend v.int, atom"_NET_WM_STATE_FULLSCREEN"
+  window.handle.wmStateSend(v.int, xaNetWMStateFullscreen)
+  blockUntil(window.fullscreen == v)
 
 proc style*(window: Window): WindowStyle =
   if window.innerDecorated:
@@ -460,7 +524,8 @@ proc `style=`*(window: Window, v: WindowStyle) =
         display.XMapWindow(window.handle)
 
       window.size = size # restore window size
-    else: discard
+    else:
+      discard
 
   case v
   of WindowStyle.Undecorated:
@@ -512,11 +577,11 @@ proc `style=`*(window: Window, v: WindowStyle) =
     display.XSetNormalHints(window.handle, hints.addr)
 
 proc title*(window: Window): string =
-  window.handle.property(atom"_NET_WM_NAME").data
+  window.handle.property(xaNetWMName).data
 
 proc `title=`*(window: Window, v: string) =
-  window.handle.setProperty(atom"_NET_WM_NAME", atom"UTF8_STRING", 8, v)
-  window.handle.setProperty(atom"_NET_WM_ICON_NAME", atom"UTF8_STRING", 8, v)
+  window.handle.setProperty(xaNetWMName, xaUTF8String, 8, v)
+  window.handle.setProperty(xaNetWMIconName, xaUTF8String, 8, v)
   display.Xutf8SetWMProperties(window.handle, v, v, nil, 0, nil, nil, nil)
 
 proc contentScale*(window: Window): float32 =
@@ -557,7 +622,7 @@ proc newWindow*(
     display.XMatchVisualInfo(display.defaultScreen, 32, TrueColor, vi.addr)
   else:
     display.XMatchVisualInfo(display.defaultScreen, 24, TrueColor, vi.addr)
-    # strangely, glx rerutns nil when -d:danger
+    # strangely, glx returns nil when -d:danger
     # var attribList = [GlxRgba, GlxDepthSize, 24, GlxDoublebuffer]
     # vi = display.glXChooseVisual(display.defaultScreen, attribList[0].addr)[]
 
@@ -572,7 +637,7 @@ proc newWindow*(
     vi.depth.cuint,
     InputOutput,
     vi.visual,
-    CwColormap or CwEventMask or CwBorderPixel or CwBackPixel,
+    CwColormap or CwEventMask or CwBorderPixel,
     swa.addr
   )
 
@@ -592,7 +657,7 @@ proc newWindow*(
     FocusChangeMask
   )
 
-  var wmProtocols = [atom"WM_DELETE_WINDOW", atom"_NET_WM_SYNC_REQUEST"]
+  var wmProtocols = [xaWMDeleteWindow, xaNetWMSyncRequest]
   display.XSetWMProtocols(
     result.handle, wmProtocols[0].addr, cint wmProtocols.len
   )
@@ -621,12 +686,12 @@ proc newWindow*(
     if display.XSyncQueryExtension(vEv.addr, vEr.addr):
       var vMaj, vMin: cint
       display.XSyncInitialize(vMaj.addr, vMin.addr)
-      result.xsyncConter = display.XSyncCreateCounter(XSyncValue())
+      result.xSyncCounter = display.XSyncCreateCounter(XSyncValue())
       result.handle.setProperty(
-        atom"_NET_WM_SYNC_REQUEST_COUNTER",
+        xaNetWMSyncRequestCounter,
         xaCardinal,
         32,
-        @[result.xsyncConter].asString
+        @[result.xSyncCounter].asString
       )
 
   windows.add result
@@ -668,13 +733,13 @@ proc pollEvents(window: Window) =
     case ev.kind
 
     of xeClientMessage:
-      if ev.client.data.l[0] == "WM_DELETE_WINDOW".atom.clong:
+      if ev.client.data.l[0] == xaWMDeleteWindow.clong:
         window.closeRequested = true
         if window.onCloseRequest != nil:
           window.onCloseRequest()
         return # end polling events immediently
 
-      elif ev.client.data.l[0] == "_NET_WM_SYNC_REQUEST".atom.clong:
+      elif ev.client.data.l[0] == xaNetWMSyncRequest.clong:
         window.lastSync = XSyncValue(
           lo: cast[uint32](ev.client.data.l[2]),
           hi: cast[int32](ev.client.data.l[3])
@@ -697,7 +762,7 @@ proc pollEvents(window: Window) =
         pushButtonEvent(k, true)
 
       if window.onFocusChange != nil:
-          window.onFocusChange()
+        window.onFocusChange()
 
     of xeFocusOut:
       if not window.innerFocused:
@@ -710,15 +775,11 @@ proc pollEvents(window: Window) =
       # release currently pressed keys
       let bd = window.buttonDown
       window.buttonDown = {}
-      for k in bd: pushButtonEvent(k.Button, false)
+      for k in bd:
+        pushButtonEvent(k.Button, false)
 
       if window.onFocusChange != nil:
         window.onFocusChange()
-
-    of xeMap:
-      window.innerVisible = true
-    of xeUnmap:
-      window.innerVisible = false
 
     of xeConfigure:
       let pos = window.pos
@@ -775,10 +836,10 @@ proc pollEvents(window: Window) =
       of 8: pushButtonEvent(MouseButton4)
       of 9: pushButtonEvent(MouseButton5)
 
-      of 4: pushScrollEvent(vec2(1, 0)) # scroll up
-      of 5: pushScrollEvent(vec2(-1, 0)) # scroll down
-      of 6: pushScrollEvent(vec2(0, 1)) # scroll left?
-      of 7: pushScrollEvent(vec2(0, -1)) # scroll right?
+      of 4: pushScrollEvent(vec2(0, 1)) # scroll up
+      of 5: pushScrollEvent(vec2(0, -1)) # scroll down
+      of 6: pushScrollEvent(vec2(-1, 0)) # scroll left?
+      of 7: pushScrollEvent(vec2(1, 0)) # scroll right?
       else: discard
 
       if not isDblclk:
@@ -808,8 +869,8 @@ proc pollEvents(window: Window) =
             for rune in s.runes:
               if window.onRune != nil:
                 window.onRune(rune)
-
-    else: discard
+    else:
+      discard
 
 proc mousePos*(window: Window): IVec2 =
   window.mousePos
@@ -868,13 +929,13 @@ proc processClipboardEvents: bool =
     of xeSelection:
       template e: untyped = ev.selection
 
-      if e.property == 0 or e.selection != atom"CLIPBOARD":
+      if e.property == 0 or e.selection != xaClipboard:
         continue
 
       clipboardContent = clipboardWindow.property(
-        atom"windy_clipboardTargetProperty"
+        xaWindyClipboardTargetProperty
       ).data
-      clipboardWindow.delProperty(atom"windy_clipboardTargetProperty")
+      clipboardWindow.delProperty(xaWindyClipboardTargetProperty)
 
       return true
 
@@ -890,19 +951,19 @@ proc processClipboardEvents: bool =
         time: e.time
       )
 
-      if e.selection == atom"CLIPBOARD":
-        if e.target == atom"TARGETS":
+      if e.selection == xaClipboard:
+        if e.target == xaTargets:
           # request requests that we can handle
           e.requestor.setProperty(e.property, xaAtom, 32, @[
-            atom"TARGETS",
-            atom"TEXT",
+            xaTargets,
+            xaText,
             xaString,
-            atom"UTF8_STRING"
+            xaUTF8String
           ].asString)
           e.requestor.send(XEvent(selection: resp), propagate = true)
           continue
 
-        elif e.target in {xaString, atom"TEXT", atom"UTF8_STRING"}:
+        elif e.target in {xaString, xaText, xaUTF8String}:
           # request clipboard data
           e.requestor.setProperty(e.property, xaAtom, 8, clipboardContent)
           e.requestor.send(XEvent(selection: resp), propagate = true)
@@ -912,20 +973,21 @@ proc processClipboardEvents: bool =
       resp.property = 0
       e.requestor.send(XEvent(selection: resp), propagate = true)
 
-    else: discard
+    else:
+      discard
 
 proc getClipboardString*: string =
   initClipboard()
-  if display.XGetSelectionOwner(atom"CLIPBOARD") == 0:
+  if display.XGetSelectionOwner(xaClipboard) == 0:
     return ""
 
-  if display.XGetSelectionOwner(atom"CLIPBOARD") == clipboardWindow:
+  if display.XGetSelectionOwner(xaClipboard) == clipboardWindow:
     return clipboardContent
 
   display.XConvertSelection(
-    atom"CLIPBOARD",
-    atom"UTF8_STRING",
-    atom"windy_clipboardTargetProperty",
+    xaClipboard,
+    xaUTF8String,
+    xaWindyClipboardTargetProperty,
     clipboardWindow
   )
 
@@ -936,7 +998,7 @@ proc getClipboardString*: string =
 proc setClipboardString*(s: string) =
   initClipboard()
   clipboardContent = s
-  display.XSetSelectionOwner(atom"CLIPBOARD", clipboardWindow)
+  display.XSetSelectionOwner(xaClipboard, clipboardWindow)
 
 proc pollEvents* =
   let ws = windows
