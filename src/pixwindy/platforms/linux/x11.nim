@@ -376,7 +376,7 @@ proc draw*(window: Window, image: Image) =
   display.XPutImage(window.handle, window.gc, ximg.addr, 0, 0, 0, 0, window.prevSize.x.uint32, window.prevSize.y.uint32)
 
   # signal that frame was drawn
-  display.XSyncSetCounter(window.xsyncConter, window.lastSync)
+  display.XSyncSetCounter(window.xSyncCounter, window.lastSync)
 
 template blockUntil(expression: untyped) {.dirty.} =
   ## In X11 many properties are async, you change them and then it takes
@@ -448,9 +448,6 @@ proc `size=`*(window: Window, v: IVec2) =
   if originalValue == v:
     return
 
-  # Its important to swap buffers so that openGL viewport updates.
-  window.swapBuffers()
-  # TODO: for some reason Chrome GLFW just do display.XFlush() and its enough?
   display.XResizeWindow(window.handle, v.x.uint32, v.y.uint32)
 
   blockUntil(originalValue != window.size)
