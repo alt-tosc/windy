@@ -357,7 +357,7 @@ proc XSetSelectionOwner*(d: Display, kind: Atom; window: Window;
 proc XConvertSelection*(d: Display, kind: Atom; to: Atom; resultProperty: Atom;
     window: Window; time: int32 = CurrentTime)
 
-proc XPutImage*(d; window: Drawable, gc: GC, image: ptr XImage, srcx, srcy: int32, dstx, dsty: int32, w, h: uint32)
+proc XPutImage*(d: Display, window: Drawable, gc: GC, image: ptr XImage, srcx, srcy: int32, dstx, dsty: int32, w, h: uint32)
 
 {.pop.}
 
